@@ -73,7 +73,7 @@ jobs:
           executable="$app_path/Contents/MacOS/Plezy"
           codesign --verify --deep --strict --verbose=2 "$app_path"
           codesign -dvv "$app_path"
-          lipo -verify_arch arm64 "$executable"
+          lipo "$executable" -verify_arch arm64
           mkdir -p smoke-artifact
           ditto -c -k --sequesterRsrc --keepParent "$app_path" \
             smoke-artifact/Plezy-finish-time-macos.zip
