@@ -1,0 +1,117 @@
+name: Fork macOS smoke build
+run-name: macOS test app for finish-time setting
+
+on:
+  push:
+    branches:
+      - ci/macos-finish-time-smoke
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-macos-finish-time-smoke
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'jtlopezdev/plezy'
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      SOURCE_COMMIT: 35768bde7272435605f2d9cf25564577498e573a
+      FLUTTER_XCODE_CODE_SIGN_STYLE: Manual
+      FLUTTER_XCODE_CODE_SIGN_IDENTITY: '-'
+      FLUTTER_XCODE_DEVELOPMENT_TEAM: ''
+      FLUTTER_XCODE_ENABLE_HARDENED_RUNTIME: 'NO'
+    steps:
+      - name: Check out the reviewed feature commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: jtlopezdev/plezy
+          ref: 35768bde7272435605f2d9cf25564577498e573a
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: stable
+          flutter-version: '3.47.1'
+          cache: false
+
+      - name: Check the Apple toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          test "$(uname -m)" = arm64
+          flutter --version
+
+      - name: Install pinned dependencies
+        run: |
+          set -euo pipefail
+          flutter pub get --enforce-lockfile --no-example
+          scripts/refresh_apple_spm.sh macos
+          git diff --exit-code -- pubspec.lock macos/Podfile.lock \
+            macos/Runner.xcworkspace/xcshareddata/swiftpm/Package.resolved \
+            macos/Runner.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
+      - name: Build the test application
+        run: |
+          set -euo pipefail
+          flutter build macos --release \
+            --dart-define=ENABLE_UPDATE_CHECK=false \
+            --dart-define=ENABLE_SENTRY=false \
+            --dart-define=ENABLE_DONATIONS=false \
+            --dart-define=SUPPORTER_MODE=unlocked \
+            --dart-define=GIT_COMMIT="$SOURCE_COMMIT"
+
+      - name: Verify and package the application
+        run: |
+          set -euo pipefail
+          app_path=build/macos/Build/Products/Release/Plezy.app
+          executable="$app_path/Contents/MacOS/Plezy"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          codesign -dvv "$app_path"
+          lipo -verify_arch arm64 "$executable"
+          mkdir -p smoke-artifact
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" \
+            smoke-artifact/Plezy-finish-time-macos.zip
+          (cd smoke-artifact && shasum -a 256 Plezy-finish-time-macos.zip > SHA256SUMS.txt)
+          {
+            echo "Source commit: $SOURCE_COMMIT"
+            echo "Workflow commit: $GITHUB_SHA"
+            echo "Build run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            flutter --version
+            xcodebuild -version
+            lipo -archs "$executable"
+          } > smoke-artifact/BUILD-INFO.txt
+          cat > smoke-artifact/READ-ME.txt <<'EOF'
+          Plezy finish-time setting test build
+
+          Requires an Apple Silicon Mac running macOS 14 or later.
+          Extract Plezy-finish-time-macos.zip to obtain Plezy.app.
+          This is an ad-hoc signed, unnotarized development artifact. If macOS
+          blocks it, use the per-app Privacy & Security > Open Anyway option.
+
+          This app has the normal Plezy bundle identifier and data locations.
+          For an isolated test, run it in a separate macOS user account. Opening
+          it in your everyday account can use or migrate existing Plezy data.
+          Keep your installed copy; this test app can be opened from Downloads.
+
+          Play a video, then test Video Playback > Show "Ends at" time on/off.
+          Check the remaining duration and desktop control positions, and check
+          that the preference survives relaunch. No settings reset is needed.
+
+          The reviewed feature source is unmodified. Automatic update checks,
+          error reporting, and donations are disabled for this build. Nothing
+          is published to GitHub Releases or submitted for Apple notarization.
+          EOF
+
+      - name: Upload the test application
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: plezy-finish-time-macos-35768bde7
+          path: smoke-artifact/
+          if-no-files-found: error
+          retention-days: 7
